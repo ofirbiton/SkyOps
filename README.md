@@ -1,7 +1,7 @@
 # SkyOps – Automated Drone Route Planning System
 
 <p align="center">
-  <img src="SkyOps-Frontend/public/SkyOps_logo.png" alt="SkyOps Logo" width="300"/>
+  <img src="SkyOps-Frontend/src/Images/skyops logo.png" alt="SkyOps Logo" width="300"/>
 </p>
 
 
