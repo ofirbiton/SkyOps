@@ -1,0 +1,38 @@
+# Python bytecode
+*.pyc
+__pycache__/
+
+# Environment files
+.env
+*.env
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
+
+# Static files
+SkyOps-Backend/static/uploads/
+SkyOps-Backend/static/outputs/
+
+# IDE files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Coverage reports
+coverage/
+*.coverage
+
+# Test outputs
+*.test_output
+
+# Miscellaneous
+*.swp
+*.swo
+*.bak
+*.tmp
