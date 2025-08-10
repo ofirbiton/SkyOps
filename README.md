@@ -1,5 +1,11 @@
 # SkyOps – Automated Drone Route Planning System
 
+<p align="center">
+  <img src="SkyOps-Frontend/public/SkyOps_logo.png" alt="SkyOps Logo" width="300"/>
+</p>
+
+
+
 ## 📌 Overview
 SkyOps is a **Full-Stack system** that automatically plans safe and efficient drone flight paths in **urban environments**.  
 Operators select a flight area, mark **takeoff** and **landing** points, and the system builds the **shortest feasible route** while avoiding buildings and blocked pixels.  
