@@ -1,57 +1,99 @@
-# SkyOps Project
+# SkyOps – Automated Drone Route Planning System
 
-SkyOps is a mission planning and visualization tool designed for drone operations. It consists of a backend server for processing mission data and a frontend application for user interaction.
+## 📌 Overview
+SkyOps is a **Full-Stack system** that automatically plans safe and efficient drone flight paths in **urban environments**.  
+Operators select a flight area, mark **takeoff** and **landing** points, and the system builds the **shortest feasible route** while avoiding buildings and blocked pixels.  
+The route can be **visualized**, **downloaded as coordinates (JSON)**, and **exported to a Litchi-compatible CSV** for automated execution.
 
-## Features
+---
 
-### Frontend
-- Interactive mission planning interface.
-- Visualization of routes and No-Fly zones.
-- CSV export for Litchi drone missions.
+## ✈ End-to-End Flow (What Happens Under the Hood)
+This section explains **how each thing is detected/computed**, with the key functions and the exact method used.
 
-### Backend
-- Image processing for route generation.
-- Skeletonization and junction detection.
-- Pathfinding using Dijkstra's algorithm.
+### 1) Inputs & Color-Pixel Detection (takeoff/landing)
+- **Files received:** `buildings_image`, `satellite_image`, and **top-left / bottom-right** real-world coordinates that define the image diagonal.
+- **Takeoff & landing pixels:** `services/mission_utils.py::find_color_pixel`
+  - Scans the image for an **exact RGB match**: takeoff = **(0,255,0)**, landing = **(0,0,255)**.
+  - Returns the first matching pixel coordinate `(x, y)`.
 
-## Installation
+### 2) Binary Mask Creation (where are the buildings?)
+- **Loader:** `core/image_loader.py::load_and_preprocess_image`
+  - Reads the building map and converts to **grayscale**.
+  - Applies a **value range threshold** (defaults: 245–249) to create a **binary mask** where candidate building pixels are `1`.
+  - **Small-region filter:** labels connected components and **keeps only regions with area ≥ `min_area`** (default 50 px) to suppress noise.
 
-### Backend
-1. Navigate to the `SkyOps-Backend` directory.
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Run the server:
-   ```bash
-   python main.py
-   ```
+### 3) Skeletonization of Free Space
+- **Skeleton creation:** `core/skeletonizer.py::skeletonize_image`
+  - **Inverts** the binary mask and applies `skimage.morphology.skeletonize`.
+  - **Cleans borders** (zeros out outermost rows/columns) to avoid edge artifacts.
+- **Dead-end removal:** `core/skeletonizer.py::remove_deadends`
+  - Repeatedly finds **degree‑1 (dead-end) skeleton pixels** using a 3×3 neighbor-count convolution and **removes them until none remain**.
+  - Rationale: prunes spurs to keep only meaningful corridors.
 
-### Frontend
-1. Navigate to the `SkyOps-Frontend` directory.
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Start the development server:
-   ```bash
-   npm start
-   ```
+### 4) Junction (Node) Detection
+- **Initial marking:** `core/junction_detector.py::highlight_dense_skeleton_nodes`
+  - Treats skeleton as a 4/8-connected graph on pixels.
+  - Marks **junction pixels** in **yellow** where the **neighbor count ≥ 3** (via a 3×3 kernel over the skeleton mask).
+- **Refinement:** `core/junction_detector.py::refine_yellow_nodes`
+  - Runs **connected-components** over yellow pixels and picks **one representative pixel per cluster** (topmost pixel) to avoid dense blobs.
+  - Output: a sparse, clean set of yellow node pixels.
 
-## Usage
+### 5) Graph Construction (connecting nodes)
+- **Neighbor discovery via BFS over the skeleton:** `core/graph_builder.py::find_neighbors`
+  - For each yellow node `(y,x)`, does a **BFS along blue skeleton pixels** to find **other yellow nodes reachable** without leaving the skeleton.
+  - This is how “junctions are found/connected via BFS.”
+- **Edge validation (line-of-sight without building collision):**
+  - `core/graph_builder.py::is_line_clear_of_buildings` uses **Bresenham line rasterization** to ensure the straight segment between two nodes does **not** cross any **white (building) pixels**.
+- **Edge creation & drawing:** `core/graph_builder.py::connect_yellow_junctions`
+  - Adds **undirected edges** with **Euclidean distance** weights between nodes that passed the collision check.
+  - Draws thin red segments for visualization.
+  - Produces `adjacency_dict` for the pathfinder.
 
-1. Open the frontend application in your browser.
-2. Upload the required images and configure mission parameters.
-3. Visualize the generated route and download the CSV for Litchi.
+### 6) Start/End Integration
+- **Direct route fast‑path:** before graphing, `core/graph_builder.py::line_intersects_building` checks if the **straight line** between takeoff and landing is clear.  
+  - If **clear**, the system **uses the direct segment** and skips graph construction.
+- **Otherwise:** `core/graph_builder.py::add_point_to_graph`
+  - Connects the **start** and **end** pixels to their **nearest existing node(s)** where the straight line **does not intersect** buildings (uses Bresenham over the **binary building mask**).
+  - If needed, this step can allow “ignore_building=True” to guarantee connection for visualization while still respecting collisions in route computation.
 
-## Environment Variables
+### 7) Shortest Path Search
+- **Algorithm:** `core/pathfinder.py::dijkstra`
+  - Standard **Dijkstra with a min‑heap** over `adjacency_dict`.
+  - Stops when the end node is popped (early exit).  
+  - Reconstructs the route via the `came_from` map.
 
-### Backend
-- `FLASK_ENV`: Set to `development` for local testing.
+### 8) Route Simplification (line-of-sight optimization)
+- **Greedy shortcutting:** `core/pathfinder.py::optimize_path`
+  - Iterates through the path and repeatedly **jumps forward** to the **farthest later node** that is **line‑of‑sight reachable** (no building intersection) using Bresenham over the **building mask**.
+  - Keeps **only turning points and endpoints**, reducing waypoint count.
 
-### Frontend
-- No specific environment variables required.
+### 9) Pixel→World Coordinate Mapping & Outputs
+- **Mapping:** `services/mission_io.py::generate_and_respond_path`
+  - If the image is `width × height` and the diagonal is defined by **(X_top_left, Y_top_left)** → **(X_bottom_right, Y_bottom_right)**, each pixel `(x,y)` is mapped **linearly**:
+    - `real_x = X_top_left + x * ((X_bottom_right - X_top_left) / width)`
+    - `real_y = Y_top_left + y * ((Y_bottom_right - Y_top_left) / height)`
+- **Artifacts produced:**
+  - **Route over buildings** image (`auto_route.png`).
+  - **Route over satellite** image (`mission_satellite.png`).
+  - **Coordinates JSON** (`auto_route_coordinates.txt` with a JSON object `{"path":[{"x":...,"y":...},...]}`).
 
-## License
+### 10) Litchi CSV Export (frontend)
+- **Generator:** `frontend/generateLitchiCsv.js`
+  - Emits standard Litchi headers and a row per waypoint (`latitude, longitude, altitude(m), ...`).
+  - **Heading** left as `-1` (free), **curve size** set to `0.2` at endpoints and `108` for interior points, **speed** default `8 m/s` (adjustable).
 
-This project is licensed under the MIT License.
+---
+
+## 🔐 Frontend UX Summary (Operator’s Perspective)
+1. Log in as **pilot/admin**.
+2. Draw the **flight area** on the map (GovMap).
+3. Click to place **takeoff (green)** and **landing (red)**.
+4. Submit → receive **visual overlays** and **download links** (CSV).
+
+---
+
+## 🛠 Technology
+- **Backend:** Python, Flask, OpenCV, scikit-image, NumPy
+- **Frontend:** React, GovMap API
+- **Core algorithms:** BFS over skeleton for neighbor discovery, Bresenham line rasterization for collision checks, Dijkstra for shortest path, greedy line-of-sight **route optimization**, linear pixel→world mapping.
+
